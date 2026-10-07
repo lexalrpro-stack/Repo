@@ -1,0 +1,1 @@
+{"name":"df-verify","main":"df_verify_server.js","dependencies":{"ws":"^8.18.0"}}
