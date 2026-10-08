@@ -1,17 +1,7 @@
 /* DEAD FROST · сервер верификации.  Запуск: npm i ws && CREATOR_CODE=lexalrcigi123 node df_verify_server.js */
 const {WebSocketServer}=require('ws'),fs=require('fs'),F='db.json',CC=process.env.CREATOR_CODE||'lexalrcigi123';
-/* ===== ХРАНЕНИЕ: Upstash Redis (бесплатно, переживает перезапуски Render). Без переменных окружения — старый режим db.json ===== */
-const UU=process.env.UPSTASH_REDIS_REST_URL,UT=process.env.UPSTASH_REDIS_REST_TOKEN,sleep=ms=>new Promise(r=>setTimeout(r,ms));
-const rcmd=async a=>{const r=await fetch(UU,{method:'POST',headers:{Authorization:'Bearer '+UT,'Content-Type':'application/json'},body:JSON.stringify(a)});if(!r.ok)throw new Error('upstash '+r.status);return (await r.json()).result};
-let db={ver:{},creator:null,bind:{},dev:{},ban:{},inv:{}},loaded=!UU,dirty=0,busy=0;
-async function load(){
- if(!UU){console.log('⚠ UPSTASH не настроен — база в db.json (на бесплатном Render она будет стираться!)');try{db=Object.assign(db,JSON.parse(fs.readFileSync(F)))}catch(e){}return}
- for(let i=0;i<6;i++){try{const v=await rcmd(['GET','df:db']);if(v)db=Object.assign(db,JSON.parse(v));loaded=true;console.log('База загружена из Upstash: верифицировано',Object.keys(db.ver).length);return}
-  catch(e){console.log('Не удалось загрузить базу:',e.message);await sleep(1500*(i+1))}}
- throw new Error('Upstash недоступен — не запускаюсь, чтобы не затереть базу пустой')}
-async function flush(){if(busy)return;busy=1;while(dirty){dirty=0;try{await rcmd(['SET','df:db',JSON.stringify(db)])}catch(e){console.log('Ошибка сохранения, повтор:',e.message);dirty=1;await sleep(3000)}}busy=0}
-const save=()=>{if(!UU){try{fs.writeFileSync(F,JSON.stringify(db))}catch(e){}return}if(!loaded)return;dirty=1;flush()},live=new Map(),ID=/^[A-Z2-9]{8}$/;
-process.on('SIGTERM',async()=>{try{if(UU&&loaded){dirty=1;await Promise.race([(async()=>{busy=0;await flush()})(),sleep(3000)])}}catch(e){}process.exit(0)});
+let db={ver:{},creator:null,bind:{},dev:{},ban:{},inv:{}};try{db=Object.assign(db,JSON.parse(fs.readFileSync(F)))}catch(e){}
+const save=()=>fs.writeFileSync(F,JSON.stringify(db)),live=new Map(),ID=/^[A-Z2-9]{8}$/;
 const wss=new WebSocketServer({noServer:true});wss.on('connection',ws=>{
  let id=null;const tx=o=>ws.readyState==1&&ws.send(JSON.stringify(o));
  const st=(msg)=>tx({t:'st',ok:!!(db.ver[id]||db.creator===id),role:db.creator===id?'creator':'player',name:db.creator===id?'lexalr':db.ver[id]||'',msg});
@@ -39,8 +29,28 @@ const aedes=require('aedes')(),{createWebSocketStream}=require('ws');
 aedes.authenticate=(c,u,p,cb)=>{u=String(u||'');p=String(p||'');
  cb(null,ID.test(u)&&!db.ban[u]&&db.bind[u]===p&&!!(db.ver[u]||db.creator===u))};
 aedes.authorizePublish=(c,pk,cb)=>pk.payload.length>20000?cb(new Error('big')):cb(null);
-const srv=require('http').createServer((q,r)=>r.end('DF ok')),
+/* музыка: файлы из папки music/ (например music/insane.mp3) отдаются по адресу /music/имя.mp3, с поддержкой перемотки (Range) для iPhone */
+const path=require('path'),MIME={'.mp3':'audio/mpeg','.ogg':'audio/ogg','.m4a':'audio/mp4','.wav':'audio/wav'},MUSIC=path.join(__dirname,'music');
+const srv=require('http').createServer((q,r)=>{
+ const u=decodeURIComponent((q.url||'').split('?')[0]);
+ if(u.startsWith('/music/')){
+  const nm=path.basename(u),type=MIME[path.extname(nm).toLowerCase()];
+  /* ищем сначала в папке music/, потом просто рядом с сервером — папку создавать необязательно */
+  const f1=path.join(MUSIC,nm),f2=path.join(__dirname,nm);
+  return fs.stat(f1,(e1,s1)=>fs.stat(f2,(e2,s2)=>{
+   const ok1=!e1&&s1.isFile(),f=ok1?f1:f2,s=ok1?s1:s2,e=ok1?null:e2;
+   if(e||!s.isFile()||!type){r.writeHead(404,{'Access-Control-Allow-Origin':'*'});return r.end()}
+   const h={'Content-Type':type,'Accept-Ranges':'bytes','Access-Control-Allow-Origin':'*','Cache-Control':'public, max-age=86400'};
+   const m=/bytes=(\d*)-(\d*)/.exec(q.headers.range||'');
+   if(m&&(m[1]||m[2])){
+    const a=m[1]?+m[1]:s.size-+m[2],b=m[1]&&m[2]?Math.min(+m[2],s.size-1):s.size-1;
+    if(a>b||a>=s.size){r.writeHead(416,{'Content-Range':'bytes */'+s.size});return r.end()}
+    r.writeHead(206,{...h,'Content-Range':`bytes ${a}-${b}/${s.size}`,'Content-Length':b-a+1});
+    fs.createReadStream(f,{start:a,end:b}).pipe(r)
+   }else{r.writeHead(200,{...h,'Content-Length':s.size});fs.createReadStream(f).pipe(r)}
+  }))}
+ r.end('DF ok')}),
  wm=new WebSocketServer({noServer:true,handleProtocols:s=>s.has('mqtt')?'mqtt':false});
 srv.on('upgrade',(q,s,h)=>{if((q.url||'').startsWith('/mqtt'))wm.handleUpgrade(q,s,h,w=>aedes.handle(createWebSocketStream(w)));
  else wss.handleUpgrade(q,s,h,w=>wss.emit('connection',w,q))});
-load().then(()=>srv.listen(process.env.PORT||8080,()=>console.log('DF server ok'))).catch(e=>{console.error(e.message);process.exit(1)});
+srv.listen(process.env.PORT||8080,()=>console.log('DF server ok'));
