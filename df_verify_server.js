@@ -1,7 +1,17 @@
 /* DEAD FROST · сервер верификации.  Запуск: npm i ws && CREATOR_CODE=lexalrcigi123 node df_verify_server.js */
 const {WebSocketServer}=require('ws'),fs=require('fs'),F='db.json',CC=process.env.CREATOR_CODE||'lexalrcigi123';
-let db={ver:{},creator:null,bind:{},dev:{},ban:{},inv:{}};try{db=Object.assign(db,JSON.parse(fs.readFileSync(F)))}catch(e){}
-const save=()=>fs.writeFileSync(F,JSON.stringify(db)),live=new Map(),ID=/^[A-Z2-9]{8}$/;
+/* ===== ХРАНЕНИЕ: Upstash Redis (бесплатно, переживает перезапуски Render). Без переменных окружения — старый режим db.json ===== */
+const UU=process.env.UPSTASH_REDIS_REST_URL,UT=process.env.UPSTASH_REDIS_REST_TOKEN,sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const rcmd=async a=>{const r=await fetch(UU,{method:'POST',headers:{Authorization:'Bearer '+UT,'Content-Type':'application/json'},body:JSON.stringify(a)});if(!r.ok)throw new Error('upstash '+r.status);return (await r.json()).result};
+let db={ver:{},creator:null,bind:{},dev:{},ban:{},inv:{}},loaded=!UU,dirty=0,busy=0;
+async function load(){
+ if(!UU){console.log('⚠ UPSTASH не настроен — база в db.json (на бесплатном Render она будет стираться!)');try{db=Object.assign(db,JSON.parse(fs.readFileSync(F)))}catch(e){}return}
+ for(let i=0;i<6;i++){try{const v=await rcmd(['GET','df:db']);if(v)db=Object.assign(db,JSON.parse(v));loaded=true;console.log('База загружена из Upstash: верифицировано',Object.keys(db.ver).length);return}
+  catch(e){console.log('Не удалось загрузить базу:',e.message);await sleep(1500*(i+1))}}
+ throw new Error('Upstash недоступен — не запускаюсь, чтобы не затереть базу пустой')}
+async function flush(){if(busy)return;busy=1;while(dirty){dirty=0;try{await rcmd(['SET','df:db',JSON.stringify(db)])}catch(e){console.log('Ошибка сохранения, повтор:',e.message);dirty=1;await sleep(3000)}}busy=0}
+const save=()=>{if(!UU){try{fs.writeFileSync(F,JSON.stringify(db))}catch(e){}return}if(!loaded)return;dirty=1;flush()},live=new Map(),ID=/^[A-Z2-9]{8}$/;
+process.on('SIGTERM',async()=>{try{if(UU&&loaded){dirty=1;await Promise.race([(async()=>{busy=0;await flush()})(),sleep(3000)])}}catch(e){}process.exit(0)});
 const wss=new WebSocketServer({noServer:true});wss.on('connection',ws=>{
  let id=null;const tx=o=>ws.readyState==1&&ws.send(JSON.stringify(o));
  const st=(msg)=>tx({t:'st',ok:!!(db.ver[id]||db.creator===id),role:db.creator===id?'creator':'player',name:db.creator===id?'lexalr':db.ver[id]||'',msg});
@@ -33,4 +43,4 @@ const srv=require('http').createServer((q,r)=>r.end('DF ok')),
  wm=new WebSocketServer({noServer:true,handleProtocols:s=>s.has('mqtt')?'mqtt':false});
 srv.on('upgrade',(q,s,h)=>{if((q.url||'').startsWith('/mqtt'))wm.handleUpgrade(q,s,h,w=>aedes.handle(createWebSocketStream(w)));
  else wss.handleUpgrade(q,s,h,w=>wss.emit('connection',w,q))});
-srv.listen(process.env.PORT||8080,()=>console.log('DF server ok'));
+load().then(()=>srv.listen(process.env.PORT||8080,()=>console.log('DF server ok'))).catch(e=>{console.error(e.message);process.exit(1)});
