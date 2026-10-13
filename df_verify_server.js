@@ -74,6 +74,21 @@ aedes.authenticate=(c,u,p,cb)=>{u=String(u||'');p=String(p||'');
 /* снятая верификация / бан / кик → сразу рвём игровое (MQTT) соединение */
 kickMqtt=id=>{for(const c of Object.values(aedes.clients||{}))if(c.dfid===id)try{c.close()}catch(e){}};
 aedes.authorizePublish=(c,pk,cb)=>pk.payload.length>20000?cb(new Error('big')):cb(null);
+/* ===== ОСТРОВ (Godot): список публичных игр. Только HTTP-реестр: сам игровой трафик Godot идёт напрямую хост<->игроки (Render пропускает лишь HTTP/WS).
+   POST /gd/reg {name,port,players,max} каждые ~8 с от хоста · POST /gd/unreg {port} · GET /gd/list. Хранится в памяти, запись живёт 25 с. ===== */
+const GD=new Map(),GD_TTL=25000,gdIp=q=>String(q.headers['cf-connecting-ip']||q.headers['true-client-ip']||(q.headers['x-forwarded-for']||'').split(',')[0].trim()||q.socket.remoteAddress||'').replace(/^::ffff:/,'');
+setInterval(()=>{const n=Date.now();for(const[k,v]of GD)if(n-v.seen>GD_TTL)GD.delete(k)},5000).unref();
+const gd=(q,r,u)=>{const H={'Content-Type':'application/json','Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'Content-Type','Cache-Control':'no-store'},
+ out=(o,c=200)=>{r.writeHead(c,H);r.end(JSON.stringify(o))};
+ if(q.method=='OPTIONS')return out({});
+ if(u=='/gd/list'&&q.method=='GET')return out({servers:[...GD.values()].map(({seen,...v})=>v)});
+ if(q.method!='POST'||(u!='/gd/reg'&&u!='/gd/unreg'))return out({ok:false},404);
+ let b='';q.on('data',c=>{b+=c;if(b.length>1024)q.destroy()});
+ q.on('end',()=>{let d;try{d=JSON.parse(b)}catch(e){return out({ok:false},400)}
+  const ip=gdIp(q),port=d.port|0,key=ip+':'+port;if(!ip||port<1||port>65535)return out({ok:false},400);
+  if(u=='/gd/unreg'){GD.delete(key);return out({ok:true})}
+  if(!GD.has(key)){if(GD.size>=200||[...GD.values()].filter(v=>v.ip==ip).length>=8)return out({ok:false},429)}
+  GD.set(key,{name:String(d.name||'Остров').slice(0,24),ip,port,players:Math.min(Math.max(d.players|0,0),99),max:Math.min(Math.max(d.max|0,1),99),seen:Date.now()});out({ok:true})})};
 /* музыка: файлы из папки music/ (например music/insane.mp3) отдаются по адресу /music/имя.mp3, с поддержкой перемотки (Range) для iPhone */
 const path=require('path'),MIME={'.mp3':'audio/mpeg','.ogg':'audio/ogg','.m4a':'audio/mp4','.wav':'audio/wav'},MUSIC=path.join(__dirname,'music');
 const srv=require('http').createServer((q,r)=>{
@@ -94,6 +109,7 @@ const srv=require('http').createServer((q,r)=>{
     fs.createReadStream(f,{start:a,end:b}).pipe(r)
    }else{r.writeHead(200,{...h,'Content-Length':s.size});fs.createReadStream(f).pipe(r)}
   }))}
+ if(u.startsWith('/gd/'))return gd(q,r,u);
  r.end('DF ok')}),
  wm=new WebSocketServer({noServer:true,handleProtocols:s=>s.has('mqtt')?'mqtt':false});
 srv.on('upgrade',(q,s,h)=>{if((q.url||'').startsWith('/mqtt'))wm.handleUpgrade(q,s,h,w=>aedes.handle(createWebSocketStream(w)));
