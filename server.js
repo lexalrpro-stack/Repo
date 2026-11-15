@@ -7,7 +7,7 @@
    · раз в 0.5 с сервер смотрит, где игроки, и назначает в каждой зоне ОДНОГО «хозяина» — его игра считает мобов;
    · хозяин шлёт состояние мобов (5 раз/с) — сервер пересылает его всем игрокам рядом, они видят мобов как обычных;
    · удары по чужим мобам идут через сервер к хозяину (сервер проверяет дистанцию и частоту ударов);
-   · если хозяин вышел или игроки разошлись, зона достаётся другому игроку. */
+   · если хозяин вышел или игроки разошлись, зона достаётся другому игроку.. */
 const http=require('http'),fs=require('fs'),path=require('path'),{WebSocketServer}=require('ws');
 const PORT=process.env.PORT||8080,MAXP=+process.env.MAX_PLAYERS||8,MAXB=400000,KEEP=(+process.env.KEEP_H||720)*3600e3,
  SAVE=path.join(process.env.DATA_DIR||__dirname,'rooms.json'),GAME=path.join(__dirname,'index.html'),CH='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
